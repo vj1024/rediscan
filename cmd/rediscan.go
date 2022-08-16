@@ -8,9 +8,12 @@ import (
 )
 
 func main() {
-	rediscan.Run(rediscan.ConfigFromFlags(), handler)
+	err := rediscan.Run(rediscan.ConfigFromFlags(), handler)
+	if err != nil {
+		log.Fatal(err)
+	}
 }
 
-func handler(client *redis.Client, key, val string) {
+func handler(_ *redis.Client, key, val string) {
 	log.Printf("key:%q, val:%q", key, val)
 }

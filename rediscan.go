@@ -23,11 +23,14 @@ type Config struct {
 	Match  string
 	Wait   time.Duration
 	Round  int
+
+	fromFlag bool
 }
 
 // ConfigFromFlags parse the config from command line.
+// This function must be called before flag.Parse()
 func ConfigFromFlags() *Config {
-	var flags Config
+	flags := &Config{fromFlag: true}
 	flag.StringVar(&flags.URL, "url", "redis://127.0.0.1:6379", "redis url, example: `redis://user:password@localhost:6789/3?dial_timeout=3&db=1&read_timeout=6s&max_retries=2`")
 	flag.Int64Var(&flags.Count, "count", 100, "limit count")
 	flag.Uint64Var(&flags.Cursor, "cursor", 0, "start cursor")
@@ -35,14 +38,16 @@ func ConfigFromFlags() *Config {
 	flag.DurationVar(&flags.Wait, "wait", 0, "time to wait between each scan, example: 1ms, 2s, 3m2s")
 	flag.IntVar(&flags.Round, "round", 1, "Scan all keys up to N times and then exit")
 
-	flag.Parse()
-	return &flags
+	return flags
 }
 
 // Run the redis scan.
 func Run(conf *Config, handler func(client *redis.Client, key, val string)) error {
 	if conf == nil {
 		return errors.New("config is nil")
+	}
+	if conf.fromFlag && !flag.Parsed() {
+		flag.Parse()
 	}
 
 	o, err := redis.ParseURL(conf.URL)
