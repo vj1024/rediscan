@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/go-redis/redis/v8"
@@ -24,6 +25,9 @@ type Config struct {
 	Wait   time.Duration
 	Round  int
 
+	KeyRegexp string
+	keyRegexp *regexp.Regexp
+
 	fromFlag bool
 }
 
@@ -35,6 +39,7 @@ func ConfigFromFlags() *Config {
 	flag.Int64Var(&flags.Count, "count", 100, "limit count")
 	flag.Uint64Var(&flags.Cursor, "cursor", 0, "start cursor")
 	flag.StringVar(&flags.Match, "match", "", "match pattern, example: `*a*bc*`")
+	flag.StringVar(&flags.KeyRegexp, "key-regexp", "", "match regexp pattern for key")
 	flag.DurationVar(&flags.Wait, "wait", 0, "time to wait between each scan, example: 1ms, 2s, 3m2s")
 	flag.IntVar(&flags.Round, "round", 1, "Scan all keys up to N times and then exit")
 
@@ -48,6 +53,14 @@ func Run(conf *Config, handler func(client *redis.Client, key, val string)) erro
 	}
 	if conf.fromFlag && !flag.Parsed() {
 		flag.Parse()
+	}
+
+	var err error
+	if conf.KeyRegexp != "" {
+		conf.keyRegexp, err = regexp.Compile(conf.KeyRegexp)
+		if err != nil {
+			return fmt.Errorf("parse key-regexp err:%v", err)
+		}
 	}
 
 	o, err := redis.ParseURL(conf.URL)
@@ -100,6 +113,10 @@ func scanKeys(db *redis.Client, conf *Config, handler func(client *redis.Client,
 		cursor = next
 
 		for _, key := range keys {
+			if conf.keyRegexp != nil && !conf.keyRegexp.MatchString(key) {
+				continue
+			}
+
 			val, err := db.Get(ctx, key).Result()
 			if err != nil {
 				logger("get key:%s, err:%v", key, err)
