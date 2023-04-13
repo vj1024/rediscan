@@ -28,22 +28,28 @@ type Config struct {
 	KeyRegexp string
 	keyRegexp *regexp.Regexp
 
+	IgnoreValue bool
+	ValueRegexp string
+	valueRegexp *regexp.Regexp
+
 	fromFlag bool
 }
 
 // ConfigFromFlags parse the config from command line.
 // This function must be called before flag.Parse()
 func ConfigFromFlags() *Config {
-	flags := &Config{fromFlag: true}
-	flag.StringVar(&flags.URL, "url", "redis://127.0.0.1:6379", "redis url, example: `redis://user:password@localhost:6789/3?dial_timeout=3&db=1&read_timeout=6s&max_retries=2`")
-	flag.Int64Var(&flags.Count, "count", 100, "limit count")
-	flag.Uint64Var(&flags.Cursor, "cursor", 0, "start cursor")
-	flag.StringVar(&flags.Match, "match", "", "match pattern, example: `*a*bc*`")
-	flag.StringVar(&flags.KeyRegexp, "key-regexp", "", "match regexp pattern for key")
-	flag.DurationVar(&flags.Wait, "wait", 0, "time to wait between each scan, example: 1ms, 2s, 3m2s")
-	flag.IntVar(&flags.Round, "round", 1, "Scan all keys up to N times and then exit")
+	conf := &Config{fromFlag: true}
+	flag.StringVar(&conf.URL, "url", "redis://127.0.0.1:6379", "redis url, example: `redis://user:password@localhost:6789?dial_timeout=3s&db=0&read_timeout=6s&max_retries=2`")
+	flag.Int64Var(&conf.Count, "count", 100, "limit count")
+	flag.Uint64Var(&conf.Cursor, "cursor", 0, "start cursor")
+	flag.StringVar(&conf.Match, "match", "", "match pattern, example: `*a*bc*`")
+	flag.StringVar(&conf.KeyRegexp, "key-regexp", "", "match regexp pattern for key")
+	flag.StringVar(&conf.ValueRegexp, "value-regexp", "", "match regexp pattern for value, not working when `ignore-value` set to true")
+	flag.DurationVar(&conf.Wait, "wait", 0, "time to wait between each scan, example: 1ms, 2s, 3m2s")
+	flag.IntVar(&conf.Round, "round", 1, "Scan all keys up to N times and then exit")
+	flag.BoolVar(&conf.IgnoreValue, "ignore-value", false, "do not get value for keys if set to true")
 
-	return flags
+	return conf
 }
 
 // Run the redis scan.
@@ -60,6 +66,13 @@ func Run(conf *Config, handler func(client *redis.Client, key, val string)) erro
 		conf.keyRegexp, err = regexp.Compile(conf.KeyRegexp)
 		if err != nil {
 			return fmt.Errorf("parse key-regexp err:%v", err)
+		}
+	}
+
+	if conf.ValueRegexp != "" {
+		conf.valueRegexp, err = regexp.Compile(conf.ValueRegexp)
+		if err != nil {
+			return fmt.Errorf("parse value-regexp err:%v", err)
 		}
 	}
 
@@ -91,8 +104,8 @@ func scanKeys(db *redis.Client, conf *Config, handler func(client *redis.Client,
 
 	cursor := conf.Cursor
 	count := conf.Count
-	if count < 1 {
-		count = 1
+	if count <= 0 {
+		count = 100
 	}
 
 	for {
@@ -117,11 +130,20 @@ func scanKeys(db *redis.Client, conf *Config, handler func(client *redis.Client,
 				continue
 			}
 
-			val, err := db.Get(ctx, key).Result()
-			if err != nil {
-				logger("get key:%s, err:%v", key, err)
-				continue
+			var val string
+			var err error
+			if !conf.IgnoreValue {
+				val, err = db.Get(ctx, key).Result()
+				if err != nil {
+					logger("get key:%s, err:%v", key, err)
+					continue
+				}
+
+				if conf.valueRegexp != nil && !conf.valueRegexp.MatchString(val) {
+					continue
+				}
 			}
+
 			handler(db, key, val)
 		}
 
