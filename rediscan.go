@@ -44,7 +44,7 @@ func ConfigFromFlags() *Config {
 	flag.Uint64Var(&conf.Cursor, "cursor", 0, "start cursor")
 	flag.StringVar(&conf.Match, "match", "", "match pattern, example: `*a*bc*`")
 	flag.StringVar(&conf.KeyRegexp, "key-regexp", "", "match regexp pattern for key")
-	flag.StringVar(&conf.ValueRegexp, "value-regexp", "", "match regexp pattern for value, not working when `ignore-value` set to true")
+	flag.StringVar(&conf.ValueRegexp, "value-regexp", "", "match regexp pattern for value, not working when 'ignore-value' set to true")
 	flag.DurationVar(&conf.Wait, "wait", 0, "time to wait between each scan, example: 1ms, 2s, 3m2s")
 	flag.IntVar(&conf.Round, "round", 1, "Scan all keys up to N times and then exit")
 	flag.BoolVar(&conf.IgnoreValue, "ignore-value", false, "do not get value for keys if set to true")

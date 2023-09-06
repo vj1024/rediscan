@@ -4,12 +4,16 @@ import (
 	"context"
 	"flag"
 	"log"
+	"os"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/vj1024/rediscan"
 )
 
 func main() {
+	log.SetFlags(0)
+	log.SetOutput(os.Stdout)
+
 	conf := rediscan.ConfigFromFlags()
 
 	cmd := flag.String("cmd", "print", "print or delete")
