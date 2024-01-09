@@ -21,6 +21,7 @@ type Config struct {
 	Match  string
 	Wait   time.Duration
 	Round  int
+	Limit  int64
 
 	KeyRegexp string
 	keyRegexp *regexp.Regexp
@@ -47,7 +48,8 @@ func ConfigFromFlags() *Config {
 	flag.StringVar(&conf.KeyRegexp, "key-regexp", "", "match regexp pattern for key")
 	flag.StringVar(&conf.ValueRegexp, "value-regexp", "", "match regexp pattern for value, not working when 'ignore-value' set to true")
 	flag.DurationVar(&conf.Wait, "wait", 0, "time to wait between each scan, example: 1ms, 2s, 3m2s")
-	flag.IntVar(&conf.Round, "round", 1, "Scan all keys up to N times and then exit")
+	flag.IntVar(&conf.Round, "round", 1, "scan all keys up to N times and then exit")
+	flag.Int64Var(&conf.Limit, "limit", 0, "if set to N and N > 0, exit process after handled N keys")
 	flag.BoolVar(&conf.IgnoreValue, "ignore-value", false, "do not get value for keys if set to true")
 	flag.StringVar(&conf.TtlGte, "ttl-gte", "", "if set, filter keys with ttl greater than or equal to the duration, duration example: 10s")
 	flag.StringVar(&conf.TtlLte, "ttl-lte", "", "if set, filter keys with ttl less than or equal to the duration, duration example: 10m")
@@ -131,6 +133,8 @@ func scanKeys(db *redis.Client, conf *Config, handler Handler) {
 	totalKeys := 0
 	ctx := context.Background()
 
+	var handledCount int64
+
 	cursor := conf.Cursor
 	count := conf.Count
 	if count <= 0 {
@@ -188,6 +192,10 @@ func scanKeys(db *redis.Client, conf *Config, handler Handler) {
 			}
 
 			handler(db, key, value, ttl)
+			handledCount++
+			if conf.Limit > 0 && handledCount >= conf.Limit {
+				return
+			}
 		}
 
 		if next == 0 {
