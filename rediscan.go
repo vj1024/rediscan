@@ -5,16 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"regexp"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 )
-
-// Logger to print logs.
-var logger = log.Printf
 
 // Config is the redis scan config.
 type Config struct {
@@ -32,6 +29,10 @@ type Config struct {
 	ValueRegexp string
 	valueRegexp *regexp.Regexp
 
+	TtlGte    string
+	TtlLte    string
+	ttlFilter func(d time.Duration) bool
+
 	fromFlag bool
 }
 
@@ -39,21 +40,29 @@ type Config struct {
 // This function must be called before flag.Parse()
 func ConfigFromFlags() *Config {
 	conf := &Config{fromFlag: true}
-	flag.StringVar(&conf.URL, "url", "redis://127.0.0.1:6379", "redis url, example: `redis://user:password@localhost:6789?dial_timeout=3s&db=0&read_timeout=6s&max_retries=2`")
+	flag.StringVar(&conf.URL, "url", "redis://127.0.0.1:6379", "redis url, example: 'redis://user:password@localhost:6789?dial_timeout=3s&db=0&read_timeout=6s&max_retries=2'")
 	flag.Int64Var(&conf.Count, "count", 100, "limit count")
 	flag.Uint64Var(&conf.Cursor, "cursor", 0, "start cursor")
-	flag.StringVar(&conf.Match, "match", "", "match pattern, example: `*a*bc*`")
+	flag.StringVar(&conf.Match, "match", "", "match pattern, example: '*a*bc*'")
 	flag.StringVar(&conf.KeyRegexp, "key-regexp", "", "match regexp pattern for key")
 	flag.StringVar(&conf.ValueRegexp, "value-regexp", "", "match regexp pattern for value, not working when 'ignore-value' set to true")
 	flag.DurationVar(&conf.Wait, "wait", 0, "time to wait between each scan, example: 1ms, 2s, 3m2s")
 	flag.IntVar(&conf.Round, "round", 1, "Scan all keys up to N times and then exit")
 	flag.BoolVar(&conf.IgnoreValue, "ignore-value", false, "do not get value for keys if set to true")
+	flag.StringVar(&conf.TtlGte, "ttl-gte", "", "if set, filter keys with ttl greater than or equal to the duration, duration example: 10s")
+	flag.StringVar(&conf.TtlLte, "ttl-lte", "", "if set, filter keys with ttl less than or equal to the duration, duration example: 10m")
 
 	return conf
 }
 
+// Handler to handle keys and values.
+//
+// `val` is nil when flag `ignore-value` is set.
+// `ttl` is nil when flags `ttl-gte` and `ttl-lte` are both not set.
+type Handler func(client *redis.Client, key string, val *string, ttl *time.Duration)
+
 // Run the redis scan.
-func Run(conf *Config, handler func(client *redis.Client, key, val string)) error {
+func Run(conf *Config, handler Handler) error {
 	if conf == nil {
 		return errors.New("config is nil")
 	}
@@ -76,6 +85,33 @@ func Run(conf *Config, handler func(client *redis.Client, key, val string)) erro
 		}
 	}
 
+	if conf.TtlGte != "" || conf.TtlLte != "" {
+		var gte, lte *time.Duration
+		if conf.TtlGte != "" {
+			d, err := time.ParseDuration(conf.TtlGte)
+			if err != nil {
+				return fmt.Errorf("parse ttl-gte to duration err: %v", err)
+			}
+			gte = &d
+		}
+		if conf.TtlLte != "" {
+			d, err := time.ParseDuration(conf.TtlLte)
+			if err != nil {
+				return fmt.Errorf("parse ttl-lte to duration err: %v", err)
+			}
+			lte = &d
+		}
+		conf.ttlFilter = func(d time.Duration) bool {
+			if gte != nil && d < *gte {
+				return false
+			}
+			if lte != nil && d > *lte {
+				return false
+			}
+			return true
+		}
+	}
+
 	o, err := redis.ParseURL(conf.URL)
 	if err != nil {
 		return fmt.Errorf("parse url err:%v", err)
@@ -89,17 +125,10 @@ func Run(conf *Config, handler func(client *redis.Client, key, val string)) erro
 	return nil
 }
 
-// Logger set the logger to print logs.
-func Logger(l func(format string, args ...interface{})) {
-	if l != nil {
-		logger = l
-	}
-}
-
-func scanKeys(db *redis.Client, conf *Config, handler func(client *redis.Client, key, val string)) {
+func scanKeys(db *redis.Client, conf *Config, handler Handler) {
 	round := 0
 	errCount := 0
-	keyCount := 0
+	totalKeys := 0
 	ctx := context.Background()
 
 	cursor := conf.Cursor
@@ -112,7 +141,7 @@ func scanKeys(db *redis.Client, conf *Config, handler func(client *redis.Client,
 		keys, next, err := db.Scan(ctx, cursor, conf.Match, count).Result()
 		if err != nil {
 			errCount++
-			logger("scan cursor:%d, err:%v", cursor, err)
+			slog.With("cursor", cursor, "error", err).Error("scan error")
 			if errCount >= 5 {
 				os.Exit(1)
 			}
@@ -121,8 +150,8 @@ func scanKeys(db *redis.Client, conf *Config, handler func(client *redis.Client,
 		}
 
 		errCount = 0
-		keyCount += len(keys)
-		logger("round:%d, scan cursor:%d, next:%d, keys:%d, total keys:%d", round+1, cursor, next, len(keys), keyCount)
+		totalKeys += len(keys)
+		slog.With("round", round+1, "cursor", cursor, "next", next, "keys", len(keys), "total_keys", totalKeys).Debug("")
 		cursor = next
 
 		for _, key := range keys {
@@ -130,21 +159,35 @@ func scanKeys(db *redis.Client, conf *Config, handler func(client *redis.Client,
 				continue
 			}
 
-			var val string
-			var err error
+			var value *string
 			if !conf.IgnoreValue {
-				val, err = db.Get(ctx, key).Result()
+				v, err := db.Get(ctx, key).Result()
 				if err != nil {
-					logger("get key:%s, err:%v", key, err)
+					slog.With("error", err, "key", key).Error("get key error")
 					continue
 				}
+				value = &v
 
-				if conf.valueRegexp != nil && !conf.valueRegexp.MatchString(val) {
+				if conf.valueRegexp != nil && !conf.valueRegexp.MatchString(v) {
 					continue
 				}
 			}
 
-			handler(db, key, val)
+			var ttl *time.Duration
+			if conf.ttlFilter != nil {
+				v, err := db.TTL(ctx, key).Result()
+				if err != nil {
+					slog.With("key", key, "error", err).Error("get ttl error")
+					continue
+				}
+				ttl = &v
+
+				if !conf.ttlFilter(v) {
+					continue
+				}
+			}
+
+			handler(db, key, value, ttl)
 		}
 
 		if next == 0 {
@@ -153,7 +196,7 @@ func scanKeys(db *redis.Client, conf *Config, handler func(client *redis.Client,
 				return
 			}
 
-			keyCount = 0
+			totalKeys = 0
 			continue
 		}
 
