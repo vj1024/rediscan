@@ -13,6 +13,9 @@ import (
 	"github.com/go-redis/redis/v8"
 )
 
+// Version is the program version set on build.
+var Version = "unknown"
+
 // Config is the redis scan config.
 type Config struct {
 	URL    string
@@ -34,6 +37,8 @@ type Config struct {
 	TtlLte    string
 	ttlFilter func(d time.Duration) bool
 
+	PrintVersion bool
+
 	fromFlag bool
 }
 
@@ -53,6 +58,7 @@ func ConfigFromFlags() *Config {
 	flag.BoolVar(&conf.IgnoreValue, "ignore-value", false, "do not get value for keys if set to true")
 	flag.StringVar(&conf.TtlGte, "ttl-gte", "", "if set, filter keys with ttl greater than or equal to the duration, duration example: 10s")
 	flag.StringVar(&conf.TtlLte, "ttl-lte", "", "if set, filter keys with ttl less than or equal to the duration, duration example: 10m")
+	flag.BoolVar(&conf.PrintVersion, "v", false, "print version and exit")
 
 	return conf
 }
@@ -70,6 +76,11 @@ func Run(conf *Config, handler Handler) error {
 	}
 	if conf.fromFlag && !flag.Parsed() {
 		flag.Parse()
+	}
+
+	if conf.PrintVersion {
+		fmt.Println(Version)
+		return nil
 	}
 
 	var err error
